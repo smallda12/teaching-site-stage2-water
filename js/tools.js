@@ -234,8 +234,7 @@ window.工具 = (function () {
 
   return { 初始化, 畫筆, 計時器群, 存 };
 })();
-
-/* BEGIN CLASSROOM_WHEEL_V1：離線抽籤輪盤，全站共用。 */
+/* BEGIN CLASSROOM_WHEEL_V2：離線抽籤輪盤，轉動音效與動態語音。 */
 (() => {
   'use strict';
   function initWheel() {
@@ -261,6 +260,9 @@ window.工具 = (function () {
       #classroom-wheel #cw-result{font-size:30px;font-weight:800;overflow-wrap:anywhere;min-height:52px;text-align:center;margin:18px 0}
       #classroom-wheel #cw-spin{display:block;width:100%;font-size:26px;font-weight:800;background:#1b6034;color:#fff}
       #classroom-wheel #cw-error{color:#9b251c;font-weight:700}
+      #classroom-wheel .cw-options label{font-size:19px;font-weight:400;display:flex;gap:10px;align-items:center;min-height:44px}
+      #classroom-wheel input[type=checkbox]{width:24px;height:24px;accent-color:#1b6034}
+      #classroom-wheel select{font:20px sans-serif;width:100%;padding:10px;border:2px solid #a1b6a0;border-radius:12px;background:white;color:#173f29;margin-bottom:14px}
       @media(max-width:600px){#classroom-wheel{padding:18px}.cw-grid{gap:14px!important}#classroom-wheel .cw-grid{grid-template-columns:1fr}#classroom-wheel .cw-wheel{max-width:280px}#classroom-wheel textarea{min-height:110px}#classroom-wheel h2{font-size:26px}}
       @media(prefers-reduced-motion:reduce){#classroom-wheel canvas{transition-duration:.01s}}
     `;
@@ -273,19 +275,44 @@ window.工具 = (function () {
     dialog.setAttribute('aria-labelledby', 'cw-title');
     dialog.innerHTML = `<header><h2 id="cw-title">抽籤輪盤</h2><button type="button" id="cw-close" aria-label="關閉抽籤輪盤">關閉</button></header>
       <div class="cw-grid"><section aria-label="輪盤與結果"><div class="cw-wheel"><div class="cw-pointer" aria-hidden="true"></div><canvas width="800" height="800" aria-label="抽籤輪盤，結果顯示在下方"></canvas></div><div id="cw-result" role="status" aria-live="polite">準備好了，轉動輪盤！</div><button type="button" id="cw-spin">開始抽籤</button></section>
-      <section><label for="cw-items">籤項清單</label><p id="cw-help">每行一個籤項，可輸入姓名、號碼或活動。每次抽籤機會相同，可重複抽中。</p><textarea id="cw-items" aria-describedby="cw-help cw-error" spellcheck="false"></textarea><p>可放入 2～60 個籤項，每項最多 80 個字。</p><p id="cw-error" role="alert"></p></section></div>`;
+      <section><label for="cw-mode">抽籤模式</label><select id="cw-mode"><option value="repeat">可重複抽中</option><option value="remove">抽過了要刪除</option></select><label for="cw-items">籤項清單</label><p id="cw-help">每行一個籤項，可輸入姓名、號碼或活動。每個籤項機會相同。停止後會唸出抽中的文字。</p><textarea id="cw-items" aria-describedby="cw-help cw-error" spellcheck="false"></textarea><p>最多 60 項，每項最多 80 字。可自訂語音，例如：紅組｜請紅組上臺。</p><p id="cw-remaining" role="status"></p><div class="cw-options"><label><input type="checkbox" id="cw-sound" checked>轉動與停止音效</label><label><input type="checkbox" id="cw-speak" checked>停止後朗讀結果</label></div><p id="cw-error" role="alert"></p></section></div>`;
     document.body.append(dialog);
     const canvas = dialog.querySelector('canvas'), ctx = canvas.getContext('2d');
     const input = dialog.querySelector('textarea'), spin = dialog.querySelector('#cw-spin');
     const result = dialog.querySelector('#cw-result'), error = dialog.querySelector('#cw-error');
-    let items = ['1','2','3','4','5','6'], angle = 0, busy = false, finishTimer;
+    const sound = dialog.querySelector('#cw-sound'), speak = dialog.querySelector('#cw-speak');
+    const mode = dialog.querySelector('#cw-mode'), remaining = dialog.querySelector('#cw-remaining');
+    let items = ['1','2','3','4','5','6'], angle = 0, busy = false, finishTimer, speechTimer, audio, master, narrating=false;
+    function labelOf(s) { return s.split('｜')[0].trim(); }
+    function voiceOf(s) { return s.includes('｜') ? s.slice(s.indexOf('｜')+1).trim() || labelOf(s) : s; }
+    function stopSound() { if(master) { master.gain.cancelScheduledValues(audio.currentTime);master.gain.setValueAtTime(0,audio.currentTime);master.disconnect(); } }
+    function tone(freq,start,length,volume=.1) {
+      if(!audio||!master)return;
+      const oscillator=audio.createOscillator(),gain=audio.createGain();oscillator.type='sine';oscillator.frequency.value=freq;
+      gain.gain.setValueAtTime(0,start);gain.gain.linearRampToValueAtTime(volume,start+.004);gain.gain.exponentialRampToValueAtTime(.0001,start+length);
+      oscillator.connect(gain);gain.connect(master);oscillator.start(start);oscillator.stop(start+length+.01);
+      oscillator.onended=()=>{oscillator.disconnect();gain.disconnect();};
+    }
+    function spinSound(duration) {
+      if(!sound.checked)return;
+      try {
+        const Audio=window.AudioContext||window.webkitAudioContext;if(!Audio)return;
+        audio=audio||new Audio();audio.resume().catch(()=>{});stopSound();
+        master=audio.createGain();master.connect(audio.destination);master.gain.value=.55;
+        let t=.015;while(t<duration-.03){tone(1050-t*100,audio.currentTime+t,.035,.16);t+=.045+.32*(t/duration)**2;}
+      } catch (_) { /* 音訊不可用時，保留視覺抽籤。 */ }
+    }
+    sound.onchange=()=>{if(!sound.checked)stopSound();};
+    if(!('speechSynthesis' in window)){speak.checked=false;speak.disabled=true;error.textContent='此瀏覽器不支援朗讀，抽籤結果仍會顯示。';}
     try { const saved = sessionStorage.getItem('classroom-wheel-items-v1'); if (saved) input.value = saved; } catch (_) {}
     if (!input.value) input.value = items.join('\n');
     const colors = ['#ffe19a','#bfe0ce','#f8b8a1','#b8d8ee','#e0c8ed','#e5e8a9'];
     function readItems() {
       const list = input.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-      if (list.length < 2 || list.length > 60) { error.textContent = '請輸入 2～60 個籤項，每行一個。'; return null; }
+      const minimum=mode.value==='remove'?1:2;
+      if (list.length < minimum || list.length > 60) { error.textContent = mode.value==='remove'&&!list.length ? '籤項已全部抽完，請輸入新的清單。' : `請輸入 ${minimum}～60 個籤項，每行一個。`; return null; }
       if (list.some(s => Array.from(s).length > 80)) { error.textContent = '每個籤項請縮短至 80 個字以內。'; return null; }
+      if (list.some(s => !labelOf(s))) { error.textContent = '自訂語音的「｜」前面請填入籤項名稱。'; return null; }
       error.textContent = ''; return list;
     }
     function draw() {
@@ -296,15 +323,16 @@ window.工具 = (function () {
         ctx.fillStyle=colors[i%colors.length];ctx.fill();ctx.strokeStyle='#fff';ctx.lineWidth=3;ctx.stroke();
         ctx.save();ctx.translate(400,400);ctx.rotate(start+step/2);ctx.fillStyle='#173f29';
         ctx.font=`bold ${items.length>30?18:items.length>16?23:32}px sans-serif`;ctx.textAlign='right';ctx.textBaseline='middle';
-        const text=Array.from(label);ctx.fillText(text.length>10?text.slice(0,9).join('')+'…':label,365,0,270);ctx.restore();
+        const display=labelOf(label),text=Array.from(display);ctx.fillText(text.length>10?text.slice(0,9).join('')+'…':display,365,0,270);ctx.restore();
       });
       ctx.beginPath();ctx.arc(400,400,42,0,Math.PI*2);ctx.fillStyle='#fff';ctx.fill();
     }
-    function preview() { const list = readItems(); if (list) { items=list; angle=0;canvas.style.transition='none';canvas.style.transform='rotate(0deg)';draw(); } }
+    function preview() { if(!busy){spin.disabled=false;spin.textContent='開始抽籤';}remaining.textContent='';const list = readItems(); if (list) { items=list; angle=0;canvas.style.transition='none';canvas.style.transform='rotate(0deg)';draw(); } }
     input.addEventListener('input',preview);
+    mode.addEventListener('change',preview);
     open.onclick = () => { if (!dialog.open) { dialog.showModal(); dialog.querySelector('#cw-close').focus(); } };
     dialog.querySelector('#cw-close').onclick = () => dialog.close();
-    dialog.addEventListener('close',() => open.focus());
+    dialog.addEventListener('close',() => {clearTimeout(speechTimer);stopSound();if(narrating&&typeof 語音!=='undefined')語音.停止();narrating=false;open.focus();});
     dialog.addEventListener('click',e => { if (e.target===dialog) { const r=dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)dialog.close(); } });
     function randomIndex(n) {
       const value=new Uint32Array(1), limit=Math.floor(4294967296/n)*n;
@@ -314,20 +342,41 @@ window.工具 = (function () {
     spin.onclick = () => {
       if (busy) return;
       const list=readItems();if(!list){input.focus();return;}items=list;draw();
+      clearTimeout(speechTimer);if(typeof 語音!=='undefined')語音.停止();
       try { sessionStorage.setItem('classroom-wheel-items-v1', input.value); } catch (_) {}
-      busy=true;spin.disabled=true;input.disabled=true;result.textContent='輪盤轉動中……';
+      busy=true;spin.disabled=true;input.disabled=true;mode.disabled=true;remaining.textContent='';result.textContent='輪盤轉動中……';
+      const removeAfter=mode.value==='remove';
+      const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
+      spinSound(reduced?.01:4);
       const selected=randomIndex(items.length), target=(360-(selected+.5)*360/items.length)%360;
+      const chosen=items[selected];
       // 固定上方指針落在中選扇形的中心；連續抽籤仍向同方向轉動。
       angle += 1800 + ((target-angle%360+360)%360);
       canvas.style.transition='';void canvas.offsetWidth;canvas.style.transform=`rotate(${angle}deg)`;
       let finished=false;
-      function finish() { if(finished)return;finished=true;clearTimeout(finishTimer);canvas.removeEventListener('transitionend',onEnd);result.textContent='抽中了：'+items[selected];busy=false;spin.disabled=false;input.disabled=false; }
+      function finish() {
+        if(finished)return;finished=true;clearTimeout(finishTimer);stopSound();canvas.removeEventListener('transitionend',onEnd);
+        result.textContent='抽中了：'+labelOf(chosen);busy=false;spin.disabled=false;input.disabled=false;mode.disabled=false;
+        if(removeAfter){
+          const left=items.filter((_,i)=>i!==selected);input.value=left.join('\n');remaining.textContent=`已移除抽中的籤項，剩餘 ${left.length} 項。`;
+          try{sessionStorage.setItem('classroom-wheel-items-v1',input.value);}catch(_){}
+          if(!left.length){spin.disabled=true;spin.textContent='全部抽完了';}
+        }
+        if(!dialog.open)return;
+        if(sound.checked&&audio){master=audio.createGain();master.gain.value=.55;master.connect(audio.destination);[523.25,659.25,783.99].forEach((f,i)=>tone(f,audio.currentTime+i*.09,.24,.16));}
+        speechTimer=setTimeout(()=>{
+          if(!dialog.open||!speak.checked)return;
+          const text=voiceOf(chosen);
+          if(typeof 語音!=='undefined'){narrating=true;語音.唸(text).finally(()=>{narrating=false;});}
+          else {const u=new SpeechSynthesisUtterance(text);u.lang='zh-TW';u.rate=.8;speechSynthesis.speak(u);}
+        },sound.checked?550:0);
+      }
       function onEnd(e){if(e.target===canvas&&e.propertyName==='transform')finish();}
       canvas.addEventListener('transitionend',onEnd);
-      finishTimer=setTimeout(finish,matchMedia('(prefers-reduced-motion: reduce)').matches?60:4300);
+      finishTimer=setTimeout(finish,reduced?60:4300);
     };
     preview();
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',initWheel,{once:true});else initWheel();
 })();
-/* END CLASSROOM_WHEEL_V1 */
+/* END CLASSROOM_WHEEL_V2 */
